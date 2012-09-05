@@ -1,0 +1,413 @@
+#include<stdio.h>
+#include<string.h>
+#include<ctype.h>
+#include<stdlib.h>
+#include<assert.h>
+
+typedef unsigned int uint_t;
+
+/* pair 存储节点的转移关系.*/
+struct regex_pair
+{
+  int c;
+  struct regex *node;
+};
+
+#define REGEX_PAIR_INIT(pair,_c,_node)  do{  \
+    pair->c=_c;                                          \
+    pair->node=_node;                                        \
+}while(0)
+
+/*分配一打*/
+struct regex_pair *regex_pair_malloc_array(uint_t len)
+{
+  return malloc(  sizeof(struct regex_pair) *len );
+}
+
+void regex_pair_free_array(struct regex_pair *pairs)
+{
+  assert(pairs!=NULL);
+  free(pairs);
+}
+
+struct regex_pair *regex_pair_malloc(int c, struct regex *node)
+{
+  struct regex_pair *pair=malloc(sizeof( struct regex_pair));
+  assert(node!=NULL);
+  if(pair==NULL){
+    return NULL;
+  }
+  pair->c=c;
+  pair->node=node;
+  return pair;
+}
+#define REGEX_CAN_FREE 1
+#define REGEX_NOT_FREE 0
+
+struct regex
+{
+  uint_t id;
+  /*记录可匹配的路径*/
+  struct regex_pair *pair;
+  uint_t pair_len;
+  char cfree;
+};
+
+#define REGEX_INIT_BY_ID(regex , _id)  do { \
+    regex->id=_id;                         \
+    regex->pair=NULL;                                     \
+    regex->pair_len=0;                                          \
+  }while(0)
+
+
+/*分配一打状态*/
+struct regex*regex_malloc_array(uint_t size)
+{
+  struct regex *r=calloc(1, size * sizeof(struct regex)  );
+  if(r==NULL){
+    return NULL;
+  }
+  r[0].cfree=REGEX_CAN_FREE;
+  return r;
+}
+
+void regex_free_array(struct regex* regex)
+{
+  assert(regex!=NULL);
+  free(regex);
+}
+
+struct regex *regex_malloc(uint_t id)
+{
+  struct regex *node=malloc(sizeof(struct regex));
+  assert(node!=NULL);
+  if(node==NULL){
+    return NULL;
+  }
+  node->id=id;
+  node->pair=NULL;
+  node->pair_len=0;
+  node->cfree=REGEX_CAN_FREE;
+
+  return node;
+}
+
+void regex_free(struct regex *regex)
+{
+  assert(regex!=NULL);
+  if(regex->cfree==REGEX_CAN_FREE){
+    free(regex);
+    if(regex->pair!=NULL){
+      free(regex->pair);
+    }
+  }
+}
+
+/*链接两个状态节点.*/
+int regex_trace_add(struct regex *from_regex ,const char *c,  struct regex * to_regex)
+{
+  struct regex_pair *pair=NULL;
+  assert(from_regex!=NULL && c!=NULL && to_regex!=NULL);
+  if(from_regex==NULL || c==NULL ||to_regex==NULL){
+    return -1;
+  }
+
+  pair=regex_pair_malloc(*c,to_regex);
+  if(pair==NULL){
+    return -1;
+  }
+  assert(from_regex->pair==NULL);
+  from_regex->pair=pair;
+  from_regex->pair_len=1;
+
+  return 0;
+}
+
+#define RS_BEGIN  0
+#define RS_END   -1
+
+uint_t __regex_node_id=0;
+uint_t regex_node_id()
+{
+  ++__regex_node_id;
+  return __regex_node_id;
+}
+
+/*把一平凡字符串转变为自动*/
+struct regex *regex_flat(const char *patter,uint_t len)
+{
+  int rtn;
+  uint_t seq=0;
+  const char *c;
+  struct regex_pair *pair;
+  struct regex_pair *pair_array;
+  struct regex *regex_array;
+  struct regex *node;
+  struct regex *regex;
+
+  assert(patter!=NULL);
+  c=patter;
+  assert(*c!='\0');
+  if(*c=='\0'){
+    return NULL;
+  }
+  regex_array=regex_malloc_array(len+1);
+  if(regex_array==NULL){
+    return NULL;
+  }
+
+  pair_array=regex_pair_malloc_array(len);
+  if(pair_array==NULL){
+    regex_free_array(regex_array);
+    return NULL;
+  }
+
+  regex=&regex_array[0];
+  REGEX_INIT_BY_ID( regex , RS_BEGIN );
+  seq=1;
+  while(*c!='\0'){
+    node=&regex_array[seq];
+    REGEX_INIT_BY_ID(node, regex_node_id() );
+    pair=&pair_array[seq-1];
+    REGEX_PAIR_INIT(pair,*c,node);
+    regex->pair=pair;
+    regex->pair_len=1;
+    regex=node;
+    ++c;
+    seq++;
+  }
+
+  //regex->id=RS_END;
+  REGEX_INIT_BY_ID(regex,RS_END);
+  return &regex_array[0];
+}
+
+
+
+//生成[abcdef]的匹配集合.
+struct regex *regex_or(const char *pattern, uint_t  len )
+{
+  const char* c;
+  struct regex *begin=regex_malloc(RS_BEGIN);
+  struct regex *end=regex_malloc(RS_END);
+  struct regex_pair *pair_array;
+  struct regex_pair *pair;
+  uint_t idx;
+  assert(pattern!=NULL && len>0);
+  pair_array=regex_pair_malloc_array(len);
+  if(pair_array==NULL){
+    return NULL;
+  }
+
+  c=pattern;
+  idx=0;
+  while(idx<len){
+    pair=&pair_array[idx];
+    REGEX_PAIR_INIT(pair,*c,end);
+    ++c;
+    ++idx;
+  }
+
+  begin->pair=pair_array;
+  begin->pair_len=len;
+  return begin;
+}
+
+
+/*查找到一个regex的end节点指针.*/
+struct regex * __regex_find_end(struct regex *r)
+{
+  struct regex *end=NULL;
+  struct regex_pair *pair;
+  uint_t seq=0;
+
+  assert(r!=NULL);
+  while(seq < r-> pair_len){
+    pair=&r->pair[seq];
+    if(pair->node->id==RS_END){
+      end=pair->node;
+      break;
+    }else{
+      end=__regex_find_end(pair->node);
+    }
+    seq++;
+  }
+  assert(end!=NULL);
+  return end;
+}
+
+
+/*
+  将r中所有指向end状态的指针指向新开头.
+ */
+void __regex_resign_end(struct regex *r ,struct regex *n_s)
+{
+  uint_t seq=0;
+  struct regex_pair *pair;
+  struct regex *end=NULL;
+  assert(r!=NULL && n_s!=NULL);
+
+  pair=r->pair;
+  while(seq< r->pair_len ){
+    pair= &r->pair[seq];
+    assert(pair->node!=NULL);
+    if(pair->node->id==RS_END){
+      end=pair->node;
+      pair->node=n_s;
+    }else{
+      __regex_resign_end(pair->node,n_s);
+    }
+    seq++;
+  }
+
+  //释放掉旧的end状态节点.
+  if(end!=NULL){
+    regex_free(end);
+  }
+}
+
+/*
+ *串联两个正则表达式
+ */
+struct regex *regex_join(struct regex *r1,struct regex *r2)
+{
+  assert(r1!=NULL && r2!=NULL);
+  assert(r1->id==RS_BEGIN && r2->id==RS_BEGIN);
+  __regex_resign_end(r1,r2);
+  r2->id=regex_node_id();
+  return r1;
+}
+
+/*
+ *并联两个正则表达式
+ *将r2.start->pair整合到r1.start->pair，并且可以释放掉r2.start.
+ *将r2中所有指向r2.end的指针修改为指向r1.end ,释放r2.end.
+*/
+struct regex* regex_union(struct regex *r1,struct regex *r2)
+{
+  struct regex_pair *pair_array;
+  struct regex *find;
+  struct regex *r1_end=NULL;
+  uint_t len;
+  assert(r1!=NULL && r2!=NULL);
+  len= r1->pair_len + r2->pair_len ;
+  pair_array=regex_pair_malloc_array( len );
+  if(pair_array==NULL){
+    return NULL;
+  }
+
+  memcpy(pair_array, r1->pair, sizeof(struct regex_pair) * r1->pair_len);
+  memcpy(&pair_array[r1->pair_len], r2->pair , sizeof(struct regex_pair) * r2->pair_len);
+
+  r1_end=__regex_find_end(r1);
+  __regex_resign_end(r2,r1_end);
+  regex_free(r2);
+  regex_pair_free_array(r1->pair);
+
+  r1->pair=pair_array;
+  r1->pair_len=len;
+
+  return r1;
+}
+
+
+
+void regex_dps_show(struct regex *regex)
+{
+  uint_t seq=0;
+  struct regex_pair *pair;
+  assert(regex!=NULL);
+
+  printf("rid:%d\n",regex->id);
+  if(regex->id==RS_END){
+    printf("\n");
+    return ;
+  }
+
+  while(seq< regex->pair_len ){
+    pair=&regex->pair[seq];
+    printf("%c -> ",(char) pair->c );
+    regex_dps_show(pair->node);
+    ++seq;
+  }
+}
+
+
+void regex_bps_show(struct regex *regex)
+{
+  uint_t seq=0;
+  struct regex_pair *pair;
+  assert(regex!=NULL);
+
+  printf("rid:%d ",regex->id);
+  if(regex->id==RS_END){
+    return ;
+  }
+
+  while(seq< regex->pair_len ){
+    pair=&regex->pair[seq];
+    printf("%c ",(char) pair->c );
+    ++seq;
+  }
+  printf("--\n");
+  seq=0;
+  while(seq< regex->pair_len ){
+    pair=&regex->pair[seq];
+    regex_dps_show(pair->node);
+    ++seq;
+  }
+}
+
+
+//测试并联
+void test_regex_union()
+{
+  struct regex *r1 = regex_flat("hello",5);
+  struct regex *r2 = regex_flat("world",5);
+  struct regex *r3;
+
+  r3=regex_union(r1,r2);
+  regex_dps_show(r3);
+
+}
+
+//测试声称串联
+int test_regex_join(int argc , char *argv[])
+{
+  struct regex *r1 = regex_flat("hello",5);
+  struct regex *r2 = regex_flat("world",5);
+  struct regex *r3;
+  regex_dps_show(r1);
+  regex_dps_show(r2);
+
+  r3=regex_join(r1,r2);
+  printf("dps_show\n");
+  regex_dps_show(r3);
+
+  return 0;
+}
+
+
+int test_regex_or()
+{
+  struct regex *r=regex_or("abcdef",6);
+  regex_bps_show(r);
+  return 0;
+}
+
+void test_regex_or_and_join()
+{
+  struct regex *r1=regex_or("hello",5);
+  struct regex *r2=regex_flat("world",5);
+  struct regex *r3=regex_join(r1,r2);
+
+  regex_dps_show(r3);
+}
+
+int main(int argc , char *argv[])
+{
+  //test_regex_or_and_join();
+  test_regex_union();
+  return 0;
+}
+
